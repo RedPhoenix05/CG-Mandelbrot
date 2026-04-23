@@ -1,0 +1,1 @@
+external/dxc/bin/x64/dxc.exe -T ps_6_0 -E main -Fo mandelbrot.cso shaders/mandelbrot.hlsl
