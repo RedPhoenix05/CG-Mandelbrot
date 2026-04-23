@@ -67,6 +67,15 @@ int main()
 
     swapchain1.As(&swapchain);
 
+    // render target view
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = 2;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+
+    device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap));
+
     // main loop
     while (!glfwWindowShouldClose(window))
     {
