@@ -2,10 +2,9 @@
 #include <GLFW/glfw3.h>
 // when creating window
 //glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 
-
-
-// DX12 debug layer
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl.h>
@@ -23,8 +22,13 @@ void EnableDebugLayer() {
 
 int main()
 {
-	// enable debug layer
-	EnableDebugLayer();
+	// create window
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
+
+    // enable debug layer
+    EnableDebugLayer();
 
     // create device for GPU connection
     ComPtr<ID3D12Device> device;
@@ -38,12 +42,32 @@ int main()
 
     device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue));
 
-	// create window
-    glfwInit();
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    // create swap chain
+    ComPtr<IDXGISwapChain1> swapchain1;
+    ComPtr<IDXGISwapChain3> swapchain;
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
+    DXGI_SWAP_CHAIN_DESC1 scDesc = {};
+    scDesc.BufferCount = 2;
+    scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scDesc.SampleDesc.Count = 1;
 
+    ComPtr<IDXGIFactory4> factory;
+    CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+
+    factory->CreateSwapChainForHwnd(
+        queue.Get(),
+        glfwGetWin32Window(window), // requires GLFW native access
+        &scDesc,
+        nullptr,
+        nullptr,
+        &swapchain1
+    );
+
+    swapchain1.As(&swapchain);
+
+    // main loop
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
