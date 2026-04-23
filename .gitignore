@@ -1,0 +1,89 @@
+# =========================
+# Build output
+# =========================
+/build/
+/bin/
+/out/
+/x64/
+/x86/
+/Debug/
+/Release/
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# =========================
+# Visual Studio
+# =========================
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# =========================
+# Intermediate / Object files
+# =========================
+*.obj
+*.o
+*.pch
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+*.tmp
+
+# =========================
+# Shader build outputs
+# =========================
+*.cso
+*.dxil
+*.spv
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# External dependencies (optional)
+# =========================
+/external/*/build/
+/external/*/bin/
+
+# =========================
+# Generated images / video frames
+# =========================
+/frames/
+/output/
+/captures/
+
+# =========================
+# PIX captures (DX12 debugging)
+# =========================
+*.wpix
+*.pix3
+
+# =========================
+# VS Code (if you use it)
+# =========================
+.vscode/
+
+# =========================
+# Misc
+# =========================
+*.cache
