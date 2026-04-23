@@ -14,12 +14,20 @@ using Microsoft::WRL::ComPtr;
 // global vars
 ComPtr<ID3D12Device> device;
 ComPtr<ID3D12CommandQueue> commandQueue;
+ComPtr<IDXGISwapChain3> swapchain;
+ComPtr<ID3D12DescriptorHeap> rtvHeap;
+ComPtr<ID3D12Resource> backBuffers[2];
+UINT rtvDescriptorSize;
+ComPtr<ID3D12CommandAllocator> commandAllocator;
+ComPtr<ID3D12GraphicsCommandList> commandList;
 
 // enable debug layer
-void EnableDebugLayer() {
+void EnableDebugLayer()
+{
 #if defined(_DEBUG)
     ComPtr<ID3D12Debug> debug;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+    {
         debug->EnableDebugLayer();
     }
 #endif
@@ -44,7 +52,6 @@ void SetupCommandQueue()
 void CreateSwapChain(GLFWwindow* window)
 {
     ComPtr<IDXGISwapChain1> swapchain1;
-    ComPtr<IDXGISwapChain3> swapchain;
 
     DXGI_SWAP_CHAIN_DESC1 scDesc = {};
     scDesc.BufferCount = 2;
@@ -56,14 +63,7 @@ void CreateSwapChain(GLFWwindow* window)
     ComPtr<IDXGIFactory4> factory;
     CreateDXGIFactory1(IID_PPV_ARGS(&factory));
 
-    factory->CreateSwapChainForHwnd(
-        commandQueue.Get(),
-        glfwGetWin32Window(window), // requires GLFW native access
-        &scDesc,
-        nullptr,
-        nullptr,
-        &swapchain1
-    );
+    factory->CreateSwapChainForHwnd(commandQueue.Get(), glfwGetWin32Window(window), &scDesc, nullptr, nullptr, &swapchain1);
 
     swapchain1.As(&swapchain);
 }
@@ -71,39 +71,54 @@ void CreateSwapChain(GLFWwindow* window)
 // render target view
 void RenderTargetView()
 {
-    ComPtr<ID3D12DescriptorHeap> rtvHeap;
-
+    // create descriptor heap
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
     heapDesc.NumDescriptors = 2;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
     device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap));
+
+    // get descriptor size
+    rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+    // get starting handle
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    // create RTVs for each back buffer
+    for (UINT i = 0; i < 2; i++)
+    {
+        swapchain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i]));
+
+        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, handle);
+
+        handle.ptr += rtvDescriptorSize;
+    }
 }
 
 // command allocator
 void CreateCommandAllocator()
 {
-    ComPtr<ID3D12CommandAllocator> allocator;
-    ComPtr<ID3D12GraphicsCommandList> cmdList;
+    // create allocator
+    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
 
-    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
+    // create command list
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
 
-    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmdList));
+    commandList->Close();
 }
 
 int main()
 {
-	// create window
+    // create window
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
 
-    
     EnableDebugLayer();
     CreateDevice();
     SetupCommandQueue();
     CreateSwapChain(window);
-	RenderTargetView();
+    RenderTargetView();
     CreateCommandAllocator();
 
     // main loop

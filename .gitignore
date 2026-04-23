@@ -88,3 +88,4 @@ Thumbs.db
 # =========================
 *.cache
 *.lastbuildstate
+/CG-Mandelbrot/x64/Debug/CG-Mandelbrot.tlog
