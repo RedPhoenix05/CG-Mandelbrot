@@ -30,6 +30,15 @@ int main()
     ComPtr<ID3D12Device> device;
     D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
 
+    // setup command queue
+    ComPtr<ID3D12CommandQueue> queue;
+
+    D3D12_COMMAND_QUEUE_DESC desc = {};
+    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+
+    device->CreateCommandQueue(&desc, IID_PPV_ARGS(&queue));
+
+	// create window
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
