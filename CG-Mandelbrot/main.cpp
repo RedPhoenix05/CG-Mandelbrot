@@ -76,6 +76,14 @@ int main()
 
     device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap));
 
+    // command allocator
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> cmdList;
+
+    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
+
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmdList));
+
     // main loop
     while (!glfwWindowShouldClose(window))
     {
