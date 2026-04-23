@@ -9,6 +9,8 @@
 #include <dxgi1_6.h>
 #include <wrl.h>
 
+#include <utility>
+
 using Microsoft::WRL::ComPtr;
 
 // global vars
@@ -107,6 +109,61 @@ void CreateCommandAllocator()
     commandList->Close();
 }
 
+void Render()
+{
+    UINT frameIndex = swapchain->GetCurrentBackBufferIndex();
+
+    // reset command system
+    commandAllocator->Reset();
+    commandList->Reset(commandAllocator.Get(), nullptr);
+
+    // get current RTV handle
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+        rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtvHandle.ptr += frameIndex * rtvDescriptorSize;
+
+    // transition PRESENT -> RENDER_TARGET
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = backBuffers[frameIndex].Get();
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    commandList->ResourceBarrier(1, &barrier);
+
+    // bind render target
+    commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // viewport + scissor (required)
+    D3D12_VIEWPORT viewport = {};
+    viewport.Width = 1280.0f;
+    viewport.Height = 720.0f;
+    viewport.MaxDepth = 1.0f;
+
+    D3D12_RECT scissor = { 0, 0, 1280, 720 };
+
+    commandList->RSSetViewports(1, &viewport);
+    commandList->RSSetScissorRects(1, &scissor);
+
+    // clear screen
+    const float color[4] = { 0.1f, 0.2f, 0.4f, 1.0f };
+    commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
+
+    // transition back RENDER_TARGET -> PRESENT
+    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    commandList->ResourceBarrier(1, &barrier);
+
+    // execute
+    commandList->Close();
+
+    ID3D12CommandList* lists[] = { commandList.Get() };
+    commandQueue->ExecuteCommandLists(1, lists);
+
+    // present
+    swapchain->Present(1, 0);
+}
+
 int main()
 {
     // create window
@@ -125,6 +182,7 @@ int main()
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
+        Render();
     }
 
     glfwDestroyWindow(window);
