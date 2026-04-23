@@ -26,12 +26,17 @@ int main()
 	// enable debug layer
 	EnableDebugLayer();
 
+    // create device for GPU connection
+    ComPtr<ID3D12Device> device;
+    D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
     GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
 
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window))
+    {
         glfwPollEvents();
     }
 
