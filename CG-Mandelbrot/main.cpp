@@ -30,8 +30,9 @@ ComPtr<ID3D12CommandQueue> commandQueue;
 ComPtr<IDXGISwapChain3> swapchain;
 ComPtr<ID3D12DescriptorHeap> rtvHeap;
 ComPtr<ID3D12Resource> backBuffers[2];
+constexpr UINT kFrameCount = 2;
 UINT rtvDescriptorSize;
-ComPtr<ID3D12CommandAllocator> commandAllocator;
+ComPtr<ID3D12CommandAllocator> commandAllocators[kFrameCount];
 ComPtr<ID3D12GraphicsCommandList> commandList;
 ComPtr<ID3D12Fence> fence;
 ComPtr<ID3D12RootSignature> rootSignature;
@@ -42,6 +43,7 @@ ComPtr<ID3D12Resource> offscreenRenderTarget;
 ComPtr<ID3D12Resource> readbackBuffer;
 UINT8* mappedConstantBuffer = nullptr;
 UINT64 fenceValue = 0;
+UINT64 frameFenceValues[kFrameCount] = {};
 HANDLE fenceEvent = nullptr;
 UINT clientWidth = 1280;
 UINT clientHeight = 720;
@@ -109,6 +111,7 @@ UINT64 captureBufferSize = 0;
 void WaitForGpu();
 void CreateOffscreenResources();
 void CreateReadbackResources();
+void WaitForFrame(UINT frameIndex);
 
 // enable debug layer
 void EnableDebugLayer()
@@ -328,14 +331,19 @@ void SaveFrameAsBmp(const uint8_t* pixels, UINT rowPitch, UINT width, UINT heigh
     }
 }
 
-void CaptureCurrentFrameIfRequested(bool shouldCapture)
+void CaptureCurrentFrameIfRequested(bool shouldCapture, UINT frameIndex)
 {
     if (!shouldCapture)
     {
         return;
     }
 
-    WaitForGpu();
+    const UINT64 valueToWaitFor = frameFenceValues[frameIndex];
+    if (valueToWaitFor > 0 && fence->GetCompletedValue() < valueToWaitFor)
+    {
+        fence->SetEventOnCompletion(valueToWaitFor, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
 
     void* mappedData = nullptr;
     D3D12_RANGE readRange = { 0, captureBufferSize };
@@ -372,11 +380,13 @@ void UpdateAdaptiveIterations()
 // command allocator
 void CreateCommandAllocator()
 {
-    // create allocator
-    device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
+    for (UINT i = 0; i < kFrameCount; i++)
+    {
+        device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocators[i]));
+    }
 
     // create command list
-    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
+    device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[0].Get(), nullptr, IID_PPV_ARGS(&commandList));
 
     commandList->Close();
 }
@@ -654,16 +664,31 @@ void WaitForGpu()
     }
 }
 
+void WaitForFrame(UINT frameIndex)
+{
+    const UINT64 valueToWaitFor = frameFenceValues[frameIndex];
+    if (valueToWaitFor == 0)
+    {
+        return;
+    }
+
+    if (fence->GetCompletedValue() < valueToWaitFor)
+    {
+        fence->SetEventOnCompletion(valueToWaitFor, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+}
+
 void Render(GLFWwindow* window, float deltaTime)
 {
-    WaitForGpu();
     ResizeSwapChainIfNeeded();
 
     UINT frameIndex = swapchain->GetCurrentBackBufferIndex();
+    WaitForFrame(frameIndex);
 
     // reset command system
-    commandAllocator->Reset();
-    commandList->Reset(commandAllocator.Get(), pipelineState.Get());
+    commandAllocators[frameIndex]->Reset();
+    commandList->Reset(commandAllocators[frameIndex].Get(), pipelineState.Get());
 
     // get current backbuffer RTV handle
     D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtvHandle =
@@ -772,10 +797,15 @@ void Render(GLFWwindow* window, float deltaTime)
     ID3D12CommandList* lists[] = { commandList.Get() };
     commandQueue->ExecuteCommandLists(1, lists);
 
+    const UINT64 signalValue = fenceValue;
+    commandQueue->Signal(fence.Get(), signalValue);
+    frameFenceValues[frameIndex] = signalValue;
+    fenceValue++;
+
     // present
     swapchain->Present(1, 0);
 
-    CaptureCurrentFrameIfRequested(shouldCapture);
+    CaptureCurrentFrameIfRequested(shouldCapture, frameIndex);
     frameCounter++;
 }
 
