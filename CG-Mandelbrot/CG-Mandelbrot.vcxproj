@@ -141,6 +141,10 @@ dxgi.lib
   </ItemGroup>
   <ItemGroup>
     <None Include="dxc-compile.bat" />
+    <None Include="mandelbrot.ini" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\\fullscreen.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

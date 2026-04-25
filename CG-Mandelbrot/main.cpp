@@ -12,7 +12,10 @@
 #include <Windows.h>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <utility>
 
 using Microsoft::WRL::ComPtr;
@@ -34,75 +37,30 @@ ComPtr<ID3D12Resource> constantBuffer;
 UINT8* mappedConstantBuffer = nullptr;
 UINT64 fenceValue = 0;
 HANDLE fenceEvent = nullptr;
+UINT clientWidth = 1280;
+UINT clientHeight = 720;
+bool resizePending = false;
+UINT pendingWidth = 1280;
+UINT pendingHeight = 720;
 
 struct MandelbrotConstants
 {
     float centerX;
     float centerY;
     float scale;
-    UINT maxIterations;
+    uint32_t maxIterations;
+    float resolutionX;
+    float resolutionY;
+    float padding0;
+    float padding1;
 };
 
-MandelbrotConstants mandelbrotConstants = { -0.5f, 0.0f, 2.2f, 256 };
-constexpr float kInitialScale = 2.2f;
-constexpr float kZoomFactorPerSecond = 0.94f;
-constexpr float kMinScale = 0.0000001f;
+MandelbrotConstants mandelbrotConstants = { -0.5f, 0.0f, 2.2f, 256u, 1280.0f, 720.0f, 0.0f, 0.0f };
+float zoomFactorPerSecond = 0.94f;
+float minScale = 0.0000001f;
+float panSpeed = 0.75f;
 
-const char* kFullscreenShaderSource = R"(
-struct VSOutput
-{
-    float4 position : SV_Position;
-    float2 uv : TEXCOORD0;
-};
-
-VSOutput VSMain(uint vertexId : SV_VertexID)
-{
-    float2 pos;
-    if (vertexId == 0) pos = float2(-1.0, -1.0);
-    else if (vertexId == 1) pos = float2(-1.0, 3.0);
-    else pos = float2(3.0, -1.0);
-
-    VSOutput output;
-    output.position = float4(pos, 0.0, 1.0);
-    output.uv = pos * 0.5 + 0.5;
-    return output;
-}
-
-cbuffer MandelbrotParams : register(b0)
-{
-    float2 center;
-    float scale;
-    uint maxIterations;
-};
-
-float4 PSMain(VSOutput input) : SV_Target
-{
-    float aspect = 1280.0 / 720.0;
-    float2 c = center + float2((input.uv.x * 2.0 - 1.0) * scale * aspect, (input.uv.y * 2.0 - 1.0) * scale);
-    float2 z = float2(0.0, 0.0);
-
-    uint i = 0;
-    for (i = 0; i < maxIterations; ++i)
-    {
-        float x = z.x * z.x - z.y * z.y + c.x;
-        float y = 2.0 * z.x * z.y + c.y;
-        z = float2(x, y);
-
-        if (dot(z, z) > 4.0)
-        {
-            break;
-        }
-    }
-
-    if (i == maxIterations)
-    {
-        return float4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    float t = (float)i / (float)maxIterations;
-    return float4(0.15 + 0.85 * t, 0.2 * t * t, 0.4 + 0.6 * sqrt(t), 1.0);
-}
-)";
+void WaitForGpu();
 
 // enable debug layer
 void EnableDebugLayer()
@@ -138,6 +96,8 @@ void CreateSwapChain(GLFWwindow* window)
 
     DXGI_SWAP_CHAIN_DESC1 scDesc = {};
     scDesc.BufferCount = 2;
+    scDesc.Width = clientWidth;
+    scDesc.Height = clientHeight;
     scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -149,6 +109,18 @@ void CreateSwapChain(GLFWwindow* window)
     factory->CreateSwapChainForHwnd(commandQueue.Get(), glfwGetWin32Window(window), &scDesc, nullptr, nullptr, &swapchain1);
 
     swapchain1.As(&swapchain);
+}
+
+void FramebufferSizeCallback(GLFWwindow* window, int width, int height)
+{
+    if (width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    pendingWidth = static_cast<UINT>(width);
+    pendingHeight = static_cast<UINT>(height);
+    resizePending = true;
 }
 
 // render target view
@@ -234,22 +206,76 @@ void CreateConstantBufferResources()
     constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mappedConstantBuffer));
 }
 
+void ResizeSwapChainIfNeeded()
+{
+    if (!resizePending)
+    {
+        return;
+    }
+
+    WaitForGpu();
+
+    for (UINT i = 0; i < 2; i++)
+    {
+        backBuffers[i].Reset();
+    }
+
+    DXGI_SWAP_CHAIN_DESC swapChainDesc = {};
+    swapchain->GetDesc(&swapChainDesc);
+    swapchain->ResizeBuffers(2, pendingWidth, pendingHeight, swapChainDesc.BufferDesc.Format, swapChainDesc.Flags);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (UINT i = 0; i < 2; i++)
+    {
+        swapchain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i]));
+        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, handle);
+        handle.ptr += rtvDescriptorSize;
+    }
+
+    clientWidth = pendingWidth;
+    clientHeight = pendingHeight;
+    resizePending = false;
+}
+
 void UpdateConstantBuffer()
 {
+    mandelbrotConstants.resolutionX = static_cast<float>(clientWidth);
+    mandelbrotConstants.resolutionY = static_cast<float>(clientHeight);
     std::memcpy(mappedConstantBuffer, &mandelbrotConstants, sizeof(mandelbrotConstants));
 }
 
-void UpdateAnimation()
+void UpdateAnimation(float deltaTime)
 {
-    float elapsedSeconds = static_cast<float>(glfwGetTime());
-    mandelbrotConstants.scale = kInitialScale * powf(kZoomFactorPerSecond, elapsedSeconds);
-    if (mandelbrotConstants.scale < kMinScale)
+    mandelbrotConstants.scale *= powf(zoomFactorPerSecond, deltaTime);
+    if (mandelbrotConstants.scale < minScale)
     {
-        mandelbrotConstants.scale = kMinScale;
+        mandelbrotConstants.scale = minScale;
     }
 }
 
-ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
+void UpdateCenterFromInput(GLFWwindow* window, float deltaTime)
+{
+    const float step = panSpeed * mandelbrotConstants.scale * deltaTime;
+
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+    {
+        mandelbrotConstants.centerX -= step;
+    }
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+    {
+        mandelbrotConstants.centerX += step;
+    }
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+    {
+        mandelbrotConstants.centerY -= step;
+    }
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+    {
+        mandelbrotConstants.centerY += step;
+    }
+}
+
+ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* shaderPath, const char* entryPoint, const char* target)
 {
     UINT compileFlags = 0;
 #if defined(_DEBUG)
@@ -258,10 +284,8 @@ ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
 
     ComPtr<ID3DBlob> bytecode;
     ComPtr<ID3DBlob> errors;
-    D3DCompile(
-        kFullscreenShaderSource,
-        strlen(kFullscreenShaderSource),
-        nullptr,
+    D3DCompileFromFile(
+        shaderPath,
         nullptr,
         nullptr,
         entryPoint,
@@ -272,6 +296,41 @@ ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
         &errors);
 
     return bytecode;
+}
+
+void LoadConfig(const char* path)
+{
+    std::ifstream file(path);
+    if (!file)
+    {
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (line.empty() || line[0] == '#')
+        {
+            continue;
+        }
+
+        const size_t separatorPos = line.find('=');
+        if (separatorPos == std::string::npos)
+        {
+            continue;
+        }
+
+        const std::string key = line.substr(0, separatorPos);
+        const std::string value = line.substr(separatorPos + 1);
+
+        if (key == "centerX") mandelbrotConstants.centerX = std::stof(value);
+        else if (key == "centerY") mandelbrotConstants.centerY = std::stof(value);
+        else if (key == "scale") mandelbrotConstants.scale = std::stof(value);
+        else if (key == "maxIterations") mandelbrotConstants.maxIterations = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "zoomFactorPerSecond") zoomFactorPerSecond = std::stof(value);
+        else if (key == "minScale") minScale = std::stof(value);
+        else if (key == "panSpeed") panSpeed = std::stof(value);
+    }
 }
 
 void CreateFullscreenPipeline()
@@ -299,8 +358,8 @@ void CreateFullscreenPipeline()
     D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &rootSigErrors);
     device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
 
-    ComPtr<ID3DBlob> vsBytecode = CompileShader("VSMain", "vs_5_0");
-    ComPtr<ID3DBlob> psBytecode = CompileShader("PSMain", "ps_5_0");
+    ComPtr<ID3DBlob> vsBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "VSMain", "vs_5_0");
+    ComPtr<ID3DBlob> psBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "PSMain", "ps_5_0");
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature.Get();
@@ -339,9 +398,10 @@ void WaitForGpu()
     }
 }
 
-void Render()
+void Render(GLFWwindow* window, float deltaTime)
 {
     WaitForGpu();
+    ResizeSwapChainIfNeeded();
 
     UINT frameIndex = swapchain->GetCurrentBackBufferIndex();
 
@@ -369,11 +429,11 @@ void Render()
 
     // viewport + scissor (required)
     D3D12_VIEWPORT viewport = {};
-    viewport.Width = 1280.0f;
-    viewport.Height = 720.0f;
+    viewport.Width = static_cast<float>(clientWidth);
+    viewport.Height = static_cast<float>(clientHeight);
     viewport.MaxDepth = 1.0f;
 
-    D3D12_RECT scissor = { 0, 0, 1280, 720 };
+    D3D12_RECT scissor = { 0, 0, static_cast<LONG>(clientWidth), static_cast<LONG>(clientHeight) };
 
     commandList->RSSetViewports(1, &viewport);
     commandList->RSSetScissorRects(1, &scissor);
@@ -382,7 +442,8 @@ void Render()
     const float color[4] = { 0.1f, 0.2f, 0.4f, 1.0f };
     commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
 
-    UpdateAnimation();
+    UpdateCenterFromInput(window, deltaTime);
+    UpdateAnimation(deltaTime);
     UpdateConstantBuffer();
 
     commandList->SetGraphicsRootSignature(rootSignature.Get());
@@ -412,6 +473,14 @@ int main()
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
+    int frameWidth = 1280;
+    int frameHeight = 720;
+    glfwGetFramebufferSize(window, &frameWidth, &frameHeight);
+    clientWidth = static_cast<UINT>(frameWidth);
+    clientHeight = static_cast<UINT>(frameHeight);
+    glfwSetFramebufferSizeCallback(window, FramebufferSizeCallback);
+
+    LoadConfig("mandelbrot.ini");
 
     EnableDebugLayer();
     CreateDevice();
@@ -424,10 +493,14 @@ int main()
     CreateFullscreenPipeline();
 
     // main loop
+    float previousTime = static_cast<float>(glfwGetTime());
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
-        Render();
+        const float currentTime = static_cast<float>(glfwGetTime());
+        const float deltaTime = currentTime - previousTime;
+        previousTime = currentTime;
+        Render(window, deltaTime);
     }
 
     WaitForGpu();
