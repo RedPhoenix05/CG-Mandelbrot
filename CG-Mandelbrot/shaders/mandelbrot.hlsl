@@ -73,16 +73,19 @@ float ComputeSmoothEscape(REAL2 c, out float distanceEstimate)
         dz = REAL2((REAL)2.0 * (z.x * dz.x - z.y * dz.y) + (REAL)1.0,
                    (REAL)2.0 * (z.x * dz.y + z.y * dz.x));
 
+        // this is the mandelbrot equation
         REAL x = z.x * z.x - z.y * z.y + c.x;
         REAL y = (REAL)2.0 * z.x * z.y + c.y;
         z = REAL2(x, y);
 
+        // if magnitude exceeds 2 (^2 > 4), it escaped and stop iterating
         if (z.x * z.x + z.y * z.y > (REAL)4.0)
         {
             break;
         }
     }
 
+    // point is in the set, return -1 to indicate no escape
     if (i >= maxIterations)
     {
         distanceEstimate = 0.0;
