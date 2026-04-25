@@ -25,6 +25,10 @@ cbuffer MandelbrotParams : register(b0)
     float2 resolution;
     float paletteCycle;
     float deaaStrength;
+    float colorPeriod;
+    float _padding0;
+    float _padding0b;
+    float _padding0c;
 
     float3 colorA;
     float _padding1;
@@ -36,7 +40,7 @@ cbuffer MandelbrotParams : register(b0)
 
 float3 Palette(float t)
 {
-    t = frac(t * paletteCycle);
+    t = frac(t);
     if (t < 0.5)
     {
         return lerp(colorA, colorB, t * 2.0);
@@ -108,8 +112,9 @@ float4 PSMain(VSOutput input) : SV_Target
         return float4(0.0, 0.0, 0.0, 1.0);
     }
 
-    float t = saturate(smoothIter / (float)maxIterations);
-    float3 color = Palette(t);
+    float period = max(colorPeriod, 1.0);
+    float phase = (smoothIter / period) * paletteCycle;
+    float3 color = Palette(phase);
 
     float pixelWorldSize = scale * 2.0 / max(resolution.y, 1.0);
     float aaWidth = max(pixelWorldSize * deaaStrength, 1e-8);

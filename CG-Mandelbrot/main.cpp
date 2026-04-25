@@ -61,6 +61,10 @@ struct MandelbrotConstants
     float resolutionY;
     float paletteCycle;
     float deaaStrength;
+    float colorPeriod;
+    float padding0;
+    float padding0b;
+    float padding0c;
     float colorA_R;
     float colorA_G;
     float colorA_B;
@@ -84,6 +88,10 @@ MandelbrotConstants mandelbrotConstants = {
     720.0f,
     3.0f,
     1.0f,
+    32.0f,
+    0.0f,
+    0.0f,
+    0.0f,
     0.08f, 0.02f, 0.20f, 0.0f,
     0.10f, 0.55f, 0.95f, 0.0f,
     0.95f, 0.90f, 0.25f, 0.0f
@@ -576,6 +584,7 @@ void LoadConfig(const char* path)
         else if (key == "colorC_G") mandelbrotConstants.colorC_G = std::stof(value);
         else if (key == "colorC_B") mandelbrotConstants.colorC_B = std::stof(value);
         else if (key == "deaaStrength") mandelbrotConstants.deaaStrength = std::stof(value);
+        else if (key == "colorPeriod") mandelbrotConstants.colorPeriod = std::stof(value);
         else if (key == "captureEnabled") captureEnabled = std::stoul(value) != 0;
         else if (key == "captureEveryNFrames") captureEveryNFrames = static_cast<uint32_t>(std::stoul(value));
         else if (key == "captureDirectory") captureDirectory = value;
@@ -599,6 +608,11 @@ void LoadConfig(const char* path)
     if (mandelbrotConstants.deaaStrength > 4.0f)
     {
         mandelbrotConstants.deaaStrength = 4.0f;
+    }
+
+    if (mandelbrotConstants.colorPeriod < 1.0f)
+    {
+        mandelbrotConstants.colorPeriod = 1.0f;
     }
 
     initialScale = mandelbrotConstants.scale;
