@@ -8,6 +8,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl.h>
+#include <Windows.h>
 
 #include <utility>
 
@@ -22,6 +23,9 @@ ComPtr<ID3D12Resource> backBuffers[2];
 UINT rtvDescriptorSize;
 ComPtr<ID3D12CommandAllocator> commandAllocator;
 ComPtr<ID3D12GraphicsCommandList> commandList;
+ComPtr<ID3D12Fence> fence;
+UINT64 fenceValue = 0;
+HANDLE fenceEvent = nullptr;
 
 // enable debug layer
 void EnableDebugLayer()
@@ -109,8 +113,30 @@ void CreateCommandAllocator()
     commandList->Close();
 }
 
+void CreateFenceObjects()
+{
+    device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    fenceValue = 1;
+    fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+}
+
+void WaitForGpu()
+{
+    const UINT64 signalValue = fenceValue;
+    commandQueue->Signal(fence.Get(), signalValue);
+    fenceValue++;
+
+    if (fence->GetCompletedValue() < signalValue)
+    {
+        fence->SetEventOnCompletion(signalValue, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+}
+
 void Render()
 {
+    WaitForGpu();
+
     UINT frameIndex = swapchain->GetCurrentBackBufferIndex();
 
     // reset command system
@@ -177,12 +203,20 @@ int main()
     CreateSwapChain(window);
     RenderTargetView();
     CreateCommandAllocator();
+    CreateFenceObjects();
 
     // main loop
     while (!glfwWindowShouldClose(window))
     {
         glfwPollEvents();
         Render();
+    }
+
+    WaitForGpu();
+    if (fenceEvent)
+    {
+        CloseHandle(fenceEvent);
+        fenceEvent = nullptr;
     }
 
     glfwDestroyWindow(window);
