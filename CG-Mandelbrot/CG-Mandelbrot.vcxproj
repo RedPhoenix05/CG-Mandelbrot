@@ -144,7 +144,7 @@ dxgi.lib
     <None Include="mandelbrot.ini" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="shaders\\fullscreen.hlsl" />
+    <None Include="shaders\\mandelbrot.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

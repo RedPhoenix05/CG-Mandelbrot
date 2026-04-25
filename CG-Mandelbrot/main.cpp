@@ -11,6 +11,7 @@
 #include <wrl.h>
 #include <Windows.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -51,14 +52,47 @@ struct MandelbrotConstants
     uint32_t maxIterations;
     float resolutionX;
     float resolutionY;
+    float paletteCycle;
     float padding0;
+    float colorA_R;
+    float colorA_G;
+    float colorA_B;
     float padding1;
+    float colorB_R;
+    float colorB_G;
+    float colorB_B;
+    float padding2;
+    float colorC_R;
+    float colorC_G;
+    float colorC_B;
+    float padding3;
 };
 
-MandelbrotConstants mandelbrotConstants = { -0.5f, 0.0f, 2.2f, 256u, 1280.0f, 720.0f, 0.0f, 0.0f };
+MandelbrotConstants mandelbrotConstants = {
+    -0.7436439f,
+    0.1318259f,
+    0.0025f,
+    256u,
+    1280.0f,
+    720.0f,
+    3.0f,
+    0.0f,
+    0.08f, 0.02f, 0.20f, 0.0f,
+    0.10f, 0.55f, 0.95f, 0.0f,
+    0.95f, 0.90f, 0.25f, 0.0f
+};
 float zoomFactorPerSecond = 0.94f;
 float minScale = 0.0000001f;
 float panSpeed = 0.75f;
+uint32_t minIterations = 256u;
+uint32_t maxIterationsCap = 8192u;
+float iterationsPerZoomOctave = 128.0f;
+float initialScale = 0.0025f;
+bool requestDoublePrecision = true;
+bool gpuSupportsDoublePrecision = false;
+bool useDoublePrecisionShader = false;
+float perturbationHintScale = 0.000000001f;
+bool perturbationHintEmitted = false;
 
 void WaitForGpu();
 
@@ -78,6 +112,18 @@ void EnableDebugLayer()
 void CreateDevice()
 {
     D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))))
+    {
+        gpuSupportsDoublePrecision = options.DoublePrecisionFloatShaderOps == TRUE;
+    }
+
+    useDoublePrecisionShader = requestDoublePrecision && gpuSupportsDoublePrecision;
+    if (requestDoublePrecision && !gpuSupportsDoublePrecision)
+    {
+        OutputDebugStringA("FP64 shader ops unsupported on this GPU; using float precision shader path.\n");
+    }
 }
 
 // setup command queue
@@ -148,6 +194,18 @@ void RenderTargetView()
 
         handle.ptr += rtvDescriptorSize;
     }
+}
+
+void UpdateAdaptiveIterations()
+{
+    const float safeScale = (std::max)(mandelbrotConstants.scale, minScale);
+    const float zoomRatio = (std::max)(initialScale / safeScale, 1.0f);
+    const float zoomDepth = log2f(zoomRatio);
+
+    const float targetIterations = static_cast<float>(minIterations) + zoomDepth * iterationsPerZoomOctave;
+    uint32_t adaptiveIterations = static_cast<uint32_t>(targetIterations);
+    adaptiveIterations = (std::max)(minIterations, (std::min)(adaptiveIterations, maxIterationsCap));
+    mandelbrotConstants.maxIterations = adaptiveIterations;
 }
 
 // command allocator
@@ -275,7 +333,7 @@ void UpdateCenterFromInput(GLFWwindow* window, float deltaTime)
     }
 }
 
-ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* shaderPath, const char* entryPoint, const char* target)
+ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* shaderPath, const char* entryPoint, const char* target, const D3D_SHADER_MACRO* defines)
 {
     UINT compileFlags = 0;
 #if defined(_DEBUG)
@@ -286,7 +344,7 @@ ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* shaderPath, const char* en
     ComPtr<ID3DBlob> errors;
     D3DCompileFromFile(
         shaderPath,
-        nullptr,
+        defines,
         nullptr,
         entryPoint,
         target,
@@ -326,11 +384,38 @@ void LoadConfig(const char* path)
         if (key == "centerX") mandelbrotConstants.centerX = std::stof(value);
         else if (key == "centerY") mandelbrotConstants.centerY = std::stof(value);
         else if (key == "scale") mandelbrotConstants.scale = std::stof(value);
-        else if (key == "maxIterations") mandelbrotConstants.maxIterations = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "maxIterations") maxIterationsCap = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "minIterations") minIterations = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "iterationsPerZoomOctave") iterationsPerZoomOctave = std::stof(value);
         else if (key == "zoomFactorPerSecond") zoomFactorPerSecond = std::stof(value);
         else if (key == "minScale") minScale = std::stof(value);
         else if (key == "panSpeed") panSpeed = std::stof(value);
+        else if (key == "enableDoublePrecision") requestDoublePrecision = std::stoul(value) != 0;
+        else if (key == "perturbationHintScale") perturbationHintScale = std::stof(value);
+        else if (key == "paletteCycle") mandelbrotConstants.paletteCycle = std::stof(value);
+        else if (key == "colorA_R") mandelbrotConstants.colorA_R = std::stof(value);
+        else if (key == "colorA_G") mandelbrotConstants.colorA_G = std::stof(value);
+        else if (key == "colorA_B") mandelbrotConstants.colorA_B = std::stof(value);
+        else if (key == "colorB_R") mandelbrotConstants.colorB_R = std::stof(value);
+        else if (key == "colorB_G") mandelbrotConstants.colorB_G = std::stof(value);
+        else if (key == "colorB_B") mandelbrotConstants.colorB_B = std::stof(value);
+        else if (key == "colorC_R") mandelbrotConstants.colorC_R = std::stof(value);
+        else if (key == "colorC_G") mandelbrotConstants.colorC_G = std::stof(value);
+        else if (key == "colorC_B") mandelbrotConstants.colorC_B = std::stof(value);
     }
+
+    if (minIterations > maxIterationsCap)
+    {
+        minIterations = maxIterationsCap;
+    }
+
+    if (mandelbrotConstants.scale < minScale)
+    {
+        mandelbrotConstants.scale = minScale;
+    }
+
+    initialScale = mandelbrotConstants.scale;
+    mandelbrotConstants.maxIterations = minIterations;
 }
 
 void CreateFullscreenPipeline()
@@ -358,8 +443,13 @@ void CreateFullscreenPipeline()
     D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1, &serializedRootSig, &rootSigErrors);
     device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
 
-    ComPtr<ID3DBlob> vsBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "VSMain", "vs_5_0");
-    ComPtr<ID3DBlob> psBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "PSMain", "ps_5_0");
+    D3D_SHADER_MACRO shaderDefines[] = {
+        { "USE_FP64", useDoublePrecisionShader ? "1" : "0" },
+        { nullptr, nullptr }
+    };
+
+    ComPtr<ID3DBlob> vsBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "VSMain", "vs_5_0", shaderDefines);
+    ComPtr<ID3DBlob> psBytecode = CompileShaderFromFile(L"shaders/mandelbrot.hlsl", "PSMain", "ps_5_0", shaderDefines);
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature.Get();
@@ -444,6 +534,14 @@ void Render(GLFWwindow* window, float deltaTime)
 
     UpdateCenterFromInput(window, deltaTime);
     UpdateAnimation(deltaTime);
+    UpdateAdaptiveIterations();
+
+    if (!perturbationHintEmitted && mandelbrotConstants.scale <= perturbationHintScale)
+    {
+        OutputDebugStringA("Deep-zoom precision limit zone reached; if artifacts appear, perturbation rendering is the next step.\n");
+        perturbationHintEmitted = true;
+    }
+
     UpdateConstantBuffer();
 
     commandList->SetGraphicsRootSignature(rootSignature.Get());
