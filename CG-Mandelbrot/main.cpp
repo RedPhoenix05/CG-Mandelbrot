@@ -332,10 +332,25 @@ void SaveFrameAsBmp(const uint8_t* pixels, UINT rowPitch, UINT width, UINT heigh
     };
     file.write(reinterpret_cast<const char*>(infoHeader), infoHeaderSize);
 
+    std::vector<uint8_t> outRow(width * bytesPerPixel);
     for (int y = static_cast<int>(height) - 1; y >= 0; --y)
     {
         const uint8_t* row = pixels + static_cast<size_t>(y) * rowPitch;
-        file.write(reinterpret_cast<const char*>(row), width * bytesPerPixel);
+
+        for (UINT x = 0; x < width; ++x)
+        {
+            const uint8_t r = row[x * 4 + 0];
+            const uint8_t g = row[x * 4 + 1];
+            const uint8_t b = row[x * 4 + 2];
+            const uint8_t a = row[x * 4 + 3];
+
+            outRow[x * 4 + 0] = b;
+            outRow[x * 4 + 1] = g;
+            outRow[x * 4 + 2] = r;
+            outRow[x * 4 + 3] = a;
+        }
+
+        file.write(reinterpret_cast<const char*>(outRow.data()), width * bytesPerPixel);
     }
 }
 
