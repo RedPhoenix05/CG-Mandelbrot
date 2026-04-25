@@ -90,3 +90,4 @@ Thumbs.db
 *.lastbuildstate
 *.tlog
 /CG-Mandelbrot/captures
+/CG-Mandelbrot/output

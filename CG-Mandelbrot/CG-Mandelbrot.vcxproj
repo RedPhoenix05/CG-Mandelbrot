@@ -141,6 +141,7 @@ dxgi.lib
   </ItemGroup>
   <ItemGroup>
     <None Include="dxc-compile.bat" />
+    <None Include="encode-video.ps1" />
     <None Include="mandelbrot.ini" />
   </ItemGroup>
   <ItemGroup>
