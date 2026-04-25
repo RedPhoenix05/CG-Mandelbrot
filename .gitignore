@@ -89,3 +89,4 @@ Thumbs.db
 *.cache
 *.lastbuildstate
 *.tlog
+/CG-Mandelbrot/captures

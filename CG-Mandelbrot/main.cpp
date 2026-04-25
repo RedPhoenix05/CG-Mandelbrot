@@ -16,8 +16,11 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -35,6 +38,8 @@ ComPtr<ID3D12RootSignature> rootSignature;
 ComPtr<ID3D12PipelineState> pipelineState;
 ComPtr<ID3D12DescriptorHeap> cbvHeap;
 ComPtr<ID3D12Resource> constantBuffer;
+ComPtr<ID3D12Resource> offscreenRenderTarget;
+ComPtr<ID3D12Resource> readbackBuffer;
 UINT8* mappedConstantBuffer = nullptr;
 UINT64 fenceValue = 0;
 HANDLE fenceEvent = nullptr;
@@ -93,8 +98,17 @@ bool gpuSupportsDoublePrecision = false;
 bool useDoublePrecisionShader = false;
 float perturbationHintScale = 0.000000001f;
 bool perturbationHintEmitted = false;
+bool captureEnabled = false;
+uint32_t captureEveryNFrames = 60u;
+std::string captureDirectory = "captures";
+uint64_t frameCounter = 0;
+uint64_t capturedFrameCounter = 0;
+UINT captureRowPitch = 0;
+UINT64 captureBufferSize = 0;
 
 void WaitForGpu();
+void CreateOffscreenResources();
+void CreateReadbackResources();
 
 // enable debug layer
 void EnableDebugLayer()
@@ -174,7 +188,7 @@ void RenderTargetView()
 {
     // create descriptor heap
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
-    heapDesc.NumDescriptors = 2;
+    heapDesc.NumDescriptors = 3;
     heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
 
     device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&rtvHeap));
@@ -194,6 +208,153 @@ void RenderTargetView()
 
         handle.ptr += rtvDescriptorSize;
     }
+}
+
+void CreateOffscreenResources()
+{
+    offscreenRenderTarget.Reset();
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    resourceDesc.Width = clientWidth;
+    resourceDesc.Height = clientHeight;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &resourceDesc,
+        D3D12_RESOURCE_STATE_COPY_SOURCE,
+        &clearValue,
+        IID_PPV_ARGS(&offscreenRenderTarget));
+
+    D3D12_CPU_DESCRIPTOR_HANDLE offscreenRtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    offscreenRtvHandle.ptr += 2 * rtvDescriptorSize;
+    device->CreateRenderTargetView(offscreenRenderTarget.Get(), nullptr, offscreenRtvHandle);
+}
+
+void CreateReadbackResources()
+{
+    readbackBuffer.Reset();
+
+    captureRowPitch = (clientWidth * 4u + 255u) & ~255u;
+    captureBufferSize = static_cast<UINT64>(captureRowPitch) * static_cast<UINT64>(clientHeight);
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resourceDesc.Width = captureBufferSize;
+    resourceDesc.Height = 1;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &resourceDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(&readbackBuffer));
+}
+
+void SaveFrameAsBmp(const uint8_t* pixels, UINT rowPitch, UINT width, UINT height, const std::string& filename)
+{
+    const uint32_t fileHeaderSize = 14u;
+    const uint32_t infoHeaderSize = 40u;
+    const uint32_t bytesPerPixel = 4u;
+    const uint32_t imageSize = width * height * bytesPerPixel;
+    const uint32_t fileSize = fileHeaderSize + infoHeaderSize + imageSize;
+
+    std::ofstream file(filename, std::ios::binary);
+    if (!file)
+    {
+        return;
+    }
+
+    const uint8_t fileHeader[fileHeaderSize] = {
+        'B', 'M',
+        static_cast<uint8_t>(fileSize),
+        static_cast<uint8_t>(fileSize >> 8),
+        static_cast<uint8_t>(fileSize >> 16),
+        static_cast<uint8_t>(fileSize >> 24),
+        0, 0, 0, 0,
+        static_cast<uint8_t>(fileHeaderSize + infoHeaderSize), 0, 0, 0
+    };
+    file.write(reinterpret_cast<const char*>(fileHeader), fileHeaderSize);
+
+    const uint8_t infoHeader[infoHeaderSize] = {
+        infoHeaderSize, 0, 0, 0,
+        static_cast<uint8_t>(width),
+        static_cast<uint8_t>(width >> 8),
+        static_cast<uint8_t>(width >> 16),
+        static_cast<uint8_t>(width >> 24),
+        static_cast<uint8_t>(height),
+        static_cast<uint8_t>(height >> 8),
+        static_cast<uint8_t>(height >> 16),
+        static_cast<uint8_t>(height >> 24),
+        1, 0,
+        32, 0,
+        0, 0, 0, 0,
+        static_cast<uint8_t>(imageSize),
+        static_cast<uint8_t>(imageSize >> 8),
+        static_cast<uint8_t>(imageSize >> 16),
+        static_cast<uint8_t>(imageSize >> 24),
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0,
+        0, 0, 0, 0
+    };
+    file.write(reinterpret_cast<const char*>(infoHeader), infoHeaderSize);
+
+    for (int y = static_cast<int>(height) - 1; y >= 0; --y)
+    {
+        const uint8_t* row = pixels + static_cast<size_t>(y) * rowPitch;
+        file.write(reinterpret_cast<const char*>(row), width * bytesPerPixel);
+    }
+}
+
+void CaptureCurrentFrameIfRequested(bool shouldCapture)
+{
+    if (!shouldCapture)
+    {
+        return;
+    }
+
+    WaitForGpu();
+
+    void* mappedData = nullptr;
+    D3D12_RANGE readRange = { 0, captureBufferSize };
+    if (FAILED(readbackBuffer->Map(0, &readRange, &mappedData)))
+    {
+        return;
+    }
+
+    CreateDirectoryA(captureDirectory.c_str(), nullptr);
+
+    std::ostringstream filename;
+    filename << captureDirectory << "\\frame_"
+             << std::setw(6) << std::setfill('0') << capturedFrameCounter
+             << ".bmp";
+    SaveFrameAsBmp(static_cast<const uint8_t*>(mappedData), captureRowPitch, clientWidth, clientHeight, filename.str());
+    capturedFrameCounter++;
+
+    D3D12_RANGE writtenRange = { 0, 0 };
+    readbackBuffer->Unmap(0, &writtenRange);
 }
 
 void UpdateAdaptiveIterations()
@@ -292,6 +453,8 @@ void ResizeSwapChainIfNeeded()
 
     clientWidth = pendingWidth;
     clientHeight = pendingHeight;
+    CreateOffscreenResources();
+    CreateReadbackResources();
     resizePending = false;
 }
 
@@ -402,6 +565,9 @@ void LoadConfig(const char* path)
         else if (key == "colorC_R") mandelbrotConstants.colorC_R = std::stof(value);
         else if (key == "colorC_G") mandelbrotConstants.colorC_G = std::stof(value);
         else if (key == "colorC_B") mandelbrotConstants.colorC_B = std::stof(value);
+        else if (key == "captureEnabled") captureEnabled = std::stoul(value) != 0;
+        else if (key == "captureEveryNFrames") captureEveryNFrames = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "captureDirectory") captureDirectory = value;
     }
 
     if (minIterations > maxIterationsCap)
@@ -499,23 +665,25 @@ void Render(GLFWwindow* window, float deltaTime)
     commandAllocator->Reset();
     commandList->Reset(commandAllocator.Get(), pipelineState.Get());
 
-    // get current RTV handle
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
+    // get current backbuffer RTV handle
+    D3D12_CPU_DESCRIPTOR_HANDLE backBufferRtvHandle =
         rtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtvHandle.ptr += frameIndex * rtvDescriptorSize;
+    backBufferRtvHandle.ptr += frameIndex * rtvDescriptorSize;
 
-    // transition PRESENT -> RENDER_TARGET
-    D3D12_RESOURCE_BARRIER barrier = {};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = backBuffers[frameIndex].Get();
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    D3D12_CPU_DESCRIPTOR_HANDLE offscreenRtvHandle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    offscreenRtvHandle.ptr += 2 * rtvDescriptorSize;
 
-    commandList->ResourceBarrier(1, &barrier);
+    D3D12_RESOURCE_BARRIER offscreenToRenderBarrier = {};
+    offscreenToRenderBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    offscreenToRenderBarrier.Transition.pResource = offscreenRenderTarget.Get();
+    offscreenToRenderBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    offscreenToRenderBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    offscreenToRenderBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
-    // bind render target
-    commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    commandList->ResourceBarrier(1, &offscreenToRenderBarrier);
+
+    // bind offscreen render target
+    commandList->OMSetRenderTargets(1, &offscreenRtvHandle, FALSE, nullptr);
 
     // viewport + scissor (required)
     D3D12_VIEWPORT viewport = {};
@@ -530,7 +698,7 @@ void Render(GLFWwindow* window, float deltaTime)
 
     // clear screen
     const float color[4] = { 0.1f, 0.2f, 0.4f, 1.0f };
-    commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
+    commandList->ClearRenderTargetView(offscreenRtvHandle, color, 0, nullptr);
 
     UpdateCenterFromInput(window, deltaTime);
     UpdateAnimation(deltaTime);
@@ -551,9 +719,52 @@ void Render(GLFWwindow* window, float deltaTime)
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->DrawInstanced(3, 1, 0, 0);
 
-    // transition back RENDER_TARGET -> PRESENT
-    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
-    commandList->ResourceBarrier(1, &barrier);
+    D3D12_RESOURCE_BARRIER offscreenToCopySourceBarrier = {};
+    offscreenToCopySourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    offscreenToCopySourceBarrier.Transition.pResource = offscreenRenderTarget.Get();
+    offscreenToCopySourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    offscreenToCopySourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    offscreenToCopySourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    commandList->ResourceBarrier(1, &offscreenToCopySourceBarrier);
+
+    D3D12_RESOURCE_BARRIER backBufferToCopyDestBarrier = {};
+    backBufferToCopyDestBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backBufferToCopyDestBarrier.Transition.pResource = backBuffers[frameIndex].Get();
+    backBufferToCopyDestBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    backBufferToCopyDestBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    backBufferToCopyDestBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    commandList->ResourceBarrier(1, &backBufferToCopyDestBarrier);
+
+    commandList->CopyResource(backBuffers[frameIndex].Get(), offscreenRenderTarget.Get());
+
+    const bool shouldCapture = captureEnabled && captureEveryNFrames > 0 && (frameCounter % captureEveryNFrames == 0);
+    if (shouldCapture)
+    {
+        D3D12_TEXTURE_COPY_LOCATION dstLocation = {};
+        dstLocation.pResource = readbackBuffer.Get();
+        dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dstLocation.PlacedFootprint.Offset = 0;
+        dstLocation.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        dstLocation.PlacedFootprint.Footprint.Width = clientWidth;
+        dstLocation.PlacedFootprint.Footprint.Height = clientHeight;
+        dstLocation.PlacedFootprint.Footprint.Depth = 1;
+        dstLocation.PlacedFootprint.Footprint.RowPitch = captureRowPitch;
+
+        D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+        srcLocation.pResource = offscreenRenderTarget.Get();
+        srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        srcLocation.SubresourceIndex = 0;
+
+        commandList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
+    }
+
+    D3D12_RESOURCE_BARRIER backBufferToPresentBarrier = {};
+    backBufferToPresentBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backBufferToPresentBarrier.Transition.pResource = backBuffers[frameIndex].Get();
+    backBufferToPresentBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    backBufferToPresentBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    backBufferToPresentBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    commandList->ResourceBarrier(1, &backBufferToPresentBarrier);
 
     // execute
     commandList->Close();
@@ -563,6 +774,9 @@ void Render(GLFWwindow* window, float deltaTime)
 
     // present
     swapchain->Present(1, 0);
+
+    CaptureCurrentFrameIfRequested(shouldCapture);
+    frameCounter++;
 }
 
 int main()
@@ -588,6 +802,8 @@ int main()
     CreateCommandAllocator();
     CreateFenceObjects();
     CreateConstantBufferResources();
+    CreateOffscreenResources();
+    CreateReadbackResources();
     CreateFullscreenPipeline();
 
     // main loop
