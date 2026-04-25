@@ -145,6 +145,7 @@ dxgi.lib
     <None Include="mandelbrot.ini" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="QUAD_PRECISION.md" />
     <None Include="shaders\\mandelbrot.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

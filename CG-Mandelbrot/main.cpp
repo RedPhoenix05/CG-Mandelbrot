@@ -24,6 +24,65 @@
 
 using Microsoft::WRL::ComPtr;
 
+// Double-double (quad precision) support
+struct dd_real
+{
+    double hi;
+    double lo;
+};
+
+// Split a double for exact arithmetic
+inline void Split(double a, double& hi, double& lo)
+{
+    const double SPLIT = 134217729.0; // 2^27 + 1
+    double temp = SPLIT * a;
+    hi = temp - (temp - a);
+    lo = a - hi;
+}
+
+// Exact sum of two doubles
+inline dd_real TwoSum(double a, double b)
+{
+    dd_real result;
+    result.hi = a + b;
+    double v = result.hi - a;
+    result.lo = (a - (result.hi - v)) + (b - v);
+    return result;
+}
+
+// Exact product of two doubles
+inline dd_real TwoProduct(double a, double b)
+{
+    dd_real result;
+    result.hi = a * b;
+
+    double a_hi, a_lo, b_hi, b_lo;
+    Split(a, a_hi, a_lo);
+    Split(b, b_hi, b_lo);
+
+    result.lo = ((a_hi * b_hi - result.hi) + a_hi * b_lo + a_lo * b_hi) + a_lo * b_lo;
+    return result;
+}
+
+// Convert double to dd_real
+inline dd_real ToDD(double a)
+{
+    dd_real result;
+    result.hi = a;
+    result.lo = 0.0;
+    return result;
+}
+
+// Add dd_real and double
+inline dd_real AddDD(dd_real a, double b)
+{
+    dd_real sum = TwoSum(a.hi, b);
+    sum.lo += a.lo;
+    // Renormalize
+    dd_real result = TwoSum(sum.hi, sum.lo);
+    return result;
+}
+
 // global vars
 ComPtr<ID3D12Device> device;
 ComPtr<ID3D12CommandQueue> commandQueue;
@@ -51,10 +110,29 @@ bool resizePending = false;
 UINT pendingWidth = 1280;
 UINT pendingHeight = 720;
 
+enum class PrecisionMode
+{
+    Float32,    // USE_FP64=0
+    Float64,    // USE_FP64=1, USE_FP128=0
+    Float128    // USE_FP128=1
+};
+
 struct MandelbrotConstants
 {
-    float centerX;
-    float centerY;
+    // For FP128 mode, center uses 4 doubles (hi/lo for x and y)
+    // For FP64/FP32 mode, only first 2 floats are used (as float2)
+    union {
+        struct {
+            float centerX;
+            float centerY;
+        };
+        struct {
+            double centerX_hi;
+            double centerX_lo;
+            double centerY_hi;
+            double centerY_lo;
+        };
+    };
     float scale;
     uint32_t maxIterations;
     float resolutionX;
@@ -104,8 +182,15 @@ uint32_t maxIterationsCap = 8192u;
 float iterationsPerZoomOctave = 128.0f;
 float initialScale = 0.0025f;
 bool requestDoublePrecision = true;
+bool requestQuadPrecision = false; // Enable for FP128 mode
 bool gpuSupportsDoublePrecision = false;
 bool useDoublePrecisionShader = false;
+bool useQuadPrecisionShader = false;
+PrecisionMode currentPrecisionMode = PrecisionMode::Float32;
+double centerX_hp = -0.7436439;
+double centerY_hp = 0.1318259;
+dd_real centerX_qp = ToDD(-0.7436439);
+dd_real centerY_qp = ToDD(0.1318259);
 float perturbationHintScale = 0.000000001f;
 bool perturbationHintEmitted = false;
 bool captureEnabled = false;
@@ -144,10 +229,30 @@ void CreateDevice()
         gpuSupportsDoublePrecision = options.DoublePrecisionFloatShaderOps == TRUE;
     }
 
-    useDoublePrecisionShader = requestDoublePrecision && gpuSupportsDoublePrecision;
-    if (requestDoublePrecision && !gpuSupportsDoublePrecision)
+    // Determine precision mode
+    if (requestQuadPrecision && gpuSupportsDoublePrecision)
     {
-        OutputDebugStringA("FP64 shader ops unsupported on this GPU; using float precision shader path.\n");
+        useQuadPrecisionShader = true;
+        useDoublePrecisionShader = false;
+        currentPrecisionMode = PrecisionMode::Float128;
+        OutputDebugStringA("Using quad-precision (FP128) shader mode.\n");
+    }
+    else if (requestDoublePrecision && gpuSupportsDoublePrecision)
+    {
+        useDoublePrecisionShader = true;
+        useQuadPrecisionShader = false;
+        currentPrecisionMode = PrecisionMode::Float64;
+        OutputDebugStringA("Using double-precision (FP64) shader mode.\n");
+    }
+    else
+    {
+        useDoublePrecisionShader = false;
+        useQuadPrecisionShader = false;
+        currentPrecisionMode = PrecisionMode::Float32;
+        if (requestDoublePrecision || requestQuadPrecision)
+        {
+            OutputDebugStringA("FP64 shader ops unsupported on this GPU; using float precision shader path.\n");
+        }
     }
 }
 
@@ -495,6 +600,22 @@ void UpdateConstantBuffer()
 {
     mandelbrotConstants.resolutionX = static_cast<float>(clientWidth);
     mandelbrotConstants.resolutionY = static_cast<float>(clientHeight);
+
+    // Update center based on precision mode
+    if (currentPrecisionMode == PrecisionMode::Float128)
+    {
+        mandelbrotConstants.centerX_hi = centerX_qp.hi;
+        mandelbrotConstants.centerX_lo = centerX_qp.lo;
+        mandelbrotConstants.centerY_hi = centerY_qp.hi;
+        mandelbrotConstants.centerY_lo = centerY_qp.lo;
+    }
+    else if (currentPrecisionMode == PrecisionMode::Float64)
+    {
+        mandelbrotConstants.centerX = static_cast<float>(centerX_hp);
+        mandelbrotConstants.centerY = static_cast<float>(centerY_hp);
+    }
+    // else Float32 mode uses the values already in mandelbrotConstants
+
     std::memcpy(mappedConstantBuffer, &mandelbrotConstants, sizeof(mandelbrotConstants));
 }
 
@@ -509,23 +630,45 @@ void UpdateAnimation(float deltaTime)
 
 void UpdateCenterFromInput(GLFWwindow* window, float deltaTime)
 {
-    const float step = panSpeed * mandelbrotConstants.scale * deltaTime;
+    const double step = static_cast<double>(panSpeed) * static_cast<double>(mandelbrotConstants.scale) * static_cast<double>(deltaTime);
+
+    double dx = 0.0;
+    double dy = 0.0;
 
     if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
     {
-        mandelbrotConstants.centerX -= step;
+        dx -= step;
     }
     if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
     {
-        mandelbrotConstants.centerX += step;
+        dx += step;
     }
     if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
     {
-        mandelbrotConstants.centerY -= step;
+        dy -= step;
     }
     if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
     {
-        mandelbrotConstants.centerY += step;
+        dy += step;
+    }
+
+    if (dx != 0.0 || dy != 0.0)
+    {
+        if (currentPrecisionMode == PrecisionMode::Float128)
+        {
+            centerX_qp = AddDD(centerX_qp, dx);
+            centerY_qp = AddDD(centerY_qp, dy);
+        }
+        else if (currentPrecisionMode == PrecisionMode::Float64)
+        {
+            centerX_hp += dx;
+            centerY_hp += dy;
+        }
+        else
+        {
+            mandelbrotConstants.centerX += static_cast<float>(dx);
+            mandelbrotConstants.centerY += static_cast<float>(dy);
+        }
     }
 }
 
@@ -577,8 +720,20 @@ void LoadConfig(const char* path)
         const std::string key = line.substr(0, separatorPos);
         const std::string value = line.substr(separatorPos + 1);
 
-        if (key == "centerX") mandelbrotConstants.centerX = std::stof(value);
-        else if (key == "centerY") mandelbrotConstants.centerY = std::stof(value);
+        if (key == "centerX")
+        {
+            double val = std::stod(value);
+            mandelbrotConstants.centerX = static_cast<float>(val);
+            centerX_hp = val;
+            centerX_qp = ToDD(val);
+        }
+        else if (key == "centerY")
+        {
+            double val = std::stod(value);
+            mandelbrotConstants.centerY = static_cast<float>(val);
+            centerY_hp = val;
+            centerY_qp = ToDD(val);
+        }
         else if (key == "scale") mandelbrotConstants.scale = std::stof(value);
         else if (key == "maxIterations") maxIterationsCap = static_cast<uint32_t>(std::stoul(value));
         else if (key == "minIterations") minIterations = static_cast<uint32_t>(std::stoul(value));
@@ -587,6 +742,7 @@ void LoadConfig(const char* path)
         else if (key == "minScale") minScale = std::stof(value);
         else if (key == "panSpeed") panSpeed = std::stof(value);
         else if (key == "enableDoublePrecision") requestDoublePrecision = std::stoul(value) != 0;
+        else if (key == "enableQuadPrecision") requestQuadPrecision = std::stoul(value) != 0;
         else if (key == "perturbationHintScale") perturbationHintScale = std::stof(value);
         else if (key == "paletteCycle") mandelbrotConstants.paletteCycle = std::stof(value);
         else if (key == "colorA_R") mandelbrotConstants.colorA_R = std::stof(value);
@@ -660,7 +816,8 @@ void CreateFullscreenPipeline()
     device->CreateRootSignature(0, serializedRootSig->GetBufferPointer(), serializedRootSig->GetBufferSize(), IID_PPV_ARGS(&rootSignature));
 
     D3D_SHADER_MACRO shaderDefines[] = {
-        { "USE_FP64", useDoublePrecisionShader ? "1" : "0" },
+        { "USE_FP64", (useDoublePrecisionShader || useQuadPrecisionShader) ? "1" : "0" },
+        { "USE_FP128", useQuadPrecisionShader ? "1" : "0" },
         { nullptr, nullptr }
     };
 
