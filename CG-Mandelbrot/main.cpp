@@ -11,6 +11,7 @@
 #include <wrl.h>
 #include <Windows.h>
 
+#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -43,6 +44,9 @@ struct MandelbrotConstants
 };
 
 MandelbrotConstants mandelbrotConstants = { -0.5f, 0.0f, 2.2f, 256 };
+constexpr float kInitialScale = 2.2f;
+constexpr float kZoomFactorPerSecond = 0.94f;
+constexpr float kMinScale = 0.0000001f;
 
 const char* kFullscreenShaderSource = R"(
 struct VSOutput
@@ -235,6 +239,16 @@ void UpdateConstantBuffer()
     std::memcpy(mappedConstantBuffer, &mandelbrotConstants, sizeof(mandelbrotConstants));
 }
 
+void UpdateAnimation()
+{
+    float elapsedSeconds = static_cast<float>(glfwGetTime());
+    mandelbrotConstants.scale = kInitialScale * powf(kZoomFactorPerSecond, elapsedSeconds);
+    if (mandelbrotConstants.scale < kMinScale)
+    {
+        mandelbrotConstants.scale = kMinScale;
+    }
+}
+
 ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
 {
     UINT compileFlags = 0;
@@ -368,6 +382,7 @@ void Render()
     const float color[4] = { 0.1f, 0.2f, 0.4f, 1.0f };
     commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
 
+    UpdateAnimation();
     UpdateConstantBuffer();
 
     commandList->SetGraphicsRootSignature(rootSignature.Get());
