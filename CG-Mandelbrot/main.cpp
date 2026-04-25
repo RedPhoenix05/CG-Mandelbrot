@@ -11,7 +11,7 @@
 #include <wrl.h>
 #include <Windows.h>
 
-#include <string>
+#include <cstring>
 #include <utility>
 
 using Microsoft::WRL::ComPtr;
@@ -28,8 +28,21 @@ ComPtr<ID3D12GraphicsCommandList> commandList;
 ComPtr<ID3D12Fence> fence;
 ComPtr<ID3D12RootSignature> rootSignature;
 ComPtr<ID3D12PipelineState> pipelineState;
+ComPtr<ID3D12DescriptorHeap> cbvHeap;
+ComPtr<ID3D12Resource> constantBuffer;
+UINT8* mappedConstantBuffer = nullptr;
 UINT64 fenceValue = 0;
 HANDLE fenceEvent = nullptr;
+
+struct MandelbrotConstants
+{
+    float centerX;
+    float centerY;
+    float scale;
+    UINT maxIterations;
+};
+
+MandelbrotConstants mandelbrotConstants = { -0.5f, 0.0f, 2.2f, 256 };
 
 const char* kFullscreenShaderSource = R"(
 struct VSOutput
@@ -51,9 +64,39 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+cbuffer MandelbrotParams : register(b0)
+{
+    float2 center;
+    float scale;
+    uint maxIterations;
+};
+
 float4 PSMain(VSOutput input) : SV_Target
 {
-    return float4(input.uv, 0.15, 1.0);
+    float aspect = 1280.0 / 720.0;
+    float2 c = center + float2((input.uv.x * 2.0 - 1.0) * scale * aspect, (input.uv.y * 2.0 - 1.0) * scale);
+    float2 z = float2(0.0, 0.0);
+
+    uint i = 0;
+    for (i = 0; i < maxIterations; ++i)
+    {
+        float x = z.x * z.x - z.y * z.y + c.x;
+        float y = 2.0 * z.x * z.y + c.y;
+        z = float2(x, y);
+
+        if (dot(z, z) > 4.0)
+        {
+            break;
+        }
+    }
+
+    if (i == maxIterations)
+    {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+
+    float t = (float)i / (float)maxIterations;
+    return float4(0.15 + 0.85 * t, 0.2 * t * t, 0.4 + 0.6 * sqrt(t), 1.0);
 }
 )";
 
@@ -150,6 +193,48 @@ void CreateFenceObjects()
     fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 }
 
+void CreateConstantBufferResources()
+{
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.NumDescriptors = 1;
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&cbvHeap));
+
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC resourceDesc = {};
+    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    resourceDesc.Width = 256;
+    resourceDesc.Height = 1;
+    resourceDesc.DepthOrArraySize = 1;
+    resourceDesc.MipLevels = 1;
+    resourceDesc.SampleDesc.Count = 1;
+    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &resourceDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&constantBuffer));
+
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+    cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress();
+    cbvDesc.SizeInBytes = 256;
+    device->CreateConstantBufferView(&cbvDesc, cbvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    D3D12_RANGE readRange = { 0, 0 };
+    constantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mappedConstantBuffer));
+}
+
+void UpdateConstantBuffer()
+{
+    std::memcpy(mappedConstantBuffer, &mandelbrotConstants, sizeof(mandelbrotConstants));
+}
+
 ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
 {
     UINT compileFlags = 0;
@@ -177,7 +262,22 @@ ComPtr<ID3DBlob> CompileShader(const char* entryPoint, const char* target)
 
 void CreateFullscreenPipeline()
 {
+    D3D12_DESCRIPTOR_RANGE descriptorRange = {};
+    descriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+    descriptorRange.NumDescriptors = 1;
+    descriptorRange.BaseShaderRegister = 0;
+    descriptorRange.RegisterSpace = 0;
+    descriptorRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER rootParameter = {};
+    rootParameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameter.DescriptorTable.NumDescriptorRanges = 1;
+    rootParameter.DescriptorTable.pDescriptorRanges = &descriptorRange;
+    rootParameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
+    rootSigDesc.NumParameters = 1;
+    rootSigDesc.pParameters = &rootParameter;
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     ComPtr<ID3DBlob> serializedRootSig;
@@ -268,7 +368,12 @@ void Render()
     const float color[4] = { 0.1f, 0.2f, 0.4f, 1.0f };
     commandList->ClearRenderTargetView(rtvHandle, color, 0, nullptr);
 
+    UpdateConstantBuffer();
+
     commandList->SetGraphicsRootSignature(rootSignature.Get());
+    ID3D12DescriptorHeap* descriptorHeaps[] = { cbvHeap.Get() };
+    commandList->SetDescriptorHeaps(1, descriptorHeaps);
+    commandList->SetGraphicsRootDescriptorTable(0, cbvHeap->GetGPUDescriptorHandleForHeapStart());
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->DrawInstanced(3, 1, 0, 0);
 
@@ -300,6 +405,7 @@ int main()
     RenderTargetView();
     CreateCommandAllocator();
     CreateFenceObjects();
+    CreateConstantBufferResources();
     CreateFullscreenPipeline();
 
     // main loop
@@ -310,6 +416,11 @@ int main()
     }
 
     WaitForGpu();
+    if (constantBuffer)
+    {
+        constantBuffer->Unmap(0, nullptr);
+        mappedConstantBuffer = nullptr;
+    }
     if (fenceEvent)
     {
         CloseHandle(fenceEvent);
