@@ -319,9 +319,11 @@ float ComputeSmoothEscape(REAL2 c, out float distanceEstimate)
 
 float4 PSMain(VSOutput input) : SV_Target
 {
+    float2 safeResolution = max(resolution, float2(1.0, 1.0));
+
 #if USE_FP128
     // Double-double coordinate calculation
-    double aspect = (double)resolution.x / (double)max(resolution.y, 1.0);
+    double aspect = (double)safeResolution.x / (double)safeResolution.y;
 
     dd_real uv_x = dd_from_double((double)input.uv.x);
     dd_real uv_y = dd_from_double((double)input.uv.y);
@@ -341,7 +343,7 @@ float4 PSMain(VSOutput input) : SV_Target
     c.x = dd_add(center.x, offset_x);
     c.y = dd_add(center.y, offset_y);
 #else
-    REAL aspect = (REAL)resolution.x / (REAL)max(resolution.y, 1.0);
+    REAL aspect = (REAL)safeResolution.x / (REAL)safeResolution.y;
     REAL2 uv = REAL2((REAL)input.uv.x, (REAL)input.uv.y);
 
     REAL2 c = (REAL2)center + REAL2((uv.x * (REAL)2.0 - (REAL)1.0) * (REAL)scale * aspect, (uv.y * (REAL)2.0 - (REAL)1.0) * (REAL)scale);
@@ -359,7 +361,7 @@ float4 PSMain(VSOutput input) : SV_Target
     float phase = (smoothIter / period) * paletteCycle;
     float3 color = Palette(phase);
 
-    float pixelWorldSize = scale * 2.0 / max(resolution.y, 1.0);
+    float pixelWorldSize = scale * 2.0 / safeResolution.y;
     float aaWidth = max(pixelWorldSize * deaaStrength, 1e-8);
 
     // Distance estimate can be conservative; apply a calibrated gain so only

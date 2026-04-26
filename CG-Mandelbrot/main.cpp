@@ -106,6 +106,8 @@ UINT64 frameFenceValues[kFrameCount] = {};
 HANDLE fenceEvent = nullptr;
 UINT clientWidth = 1280;
 UINT clientHeight = 720;
+UINT configuredWindowWidth = 1920;
+UINT configuredWindowHeight = 1080;
 bool resizePending = false;
 UINT pendingWidth = 1280;
 UINT pendingHeight = 720;
@@ -759,6 +761,8 @@ void LoadConfig(const char* path)
         else if (key == "captureEnabled") captureEnabled = std::stoul(value) != 0;
         else if (key == "captureEveryNFrames") captureEveryNFrames = static_cast<uint32_t>(std::stoul(value));
         else if (key == "captureDirectory") captureDirectory = value;
+        else if (key == "resolutionX") configuredWindowWidth = (std::max)(1u, static_cast<UINT>(std::stoul(value)));
+        else if (key == "resolutionY") configuredWindowHeight = (std::max)(1u, static_cast<UINT>(std::stoul(value)));
     }
 
     if (minIterations > maxIterationsCap)
@@ -785,6 +789,13 @@ void LoadConfig(const char* path)
     {
         mandelbrotConstants.colorPeriod = 1.0f;
     }
+
+    clientWidth = configuredWindowWidth;
+    clientHeight = configuredWindowHeight;
+    pendingWidth = configuredWindowWidth;
+    pendingHeight = configuredWindowHeight;
+    mandelbrotConstants.resolutionX = static_cast<float>(configuredWindowWidth);
+    mandelbrotConstants.resolutionY = static_cast<float>(configuredWindowHeight);
 
     initialScale = mandelbrotConstants.scale;
     mandelbrotConstants.maxIterations = minIterations;
@@ -1008,18 +1019,20 @@ void Render(GLFWwindow* window, float deltaTime)
 
 int main()
 {
+    LoadConfig("mandelbrot.ini");
+
     // create window
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "DX12", nullptr, nullptr);
-    int frameWidth = 1280;
-    int frameHeight = 720;
+    GLFWwindow* window = glfwCreateWindow(static_cast<int>(configuredWindowWidth), static_cast<int>(configuredWindowHeight), "DX12", nullptr, nullptr);
+    int frameWidth = static_cast<int>(configuredWindowWidth);
+    int frameHeight = static_cast<int>(configuredWindowHeight);
     glfwGetFramebufferSize(window, &frameWidth, &frameHeight);
     clientWidth = static_cast<UINT>(frameWidth);
     clientHeight = static_cast<UINT>(frameHeight);
+    pendingWidth = clientWidth;
+    pendingHeight = clientHeight;
     glfwSetFramebufferSizeCallback(window, FramebufferSizeCallback);
-
-    LoadConfig("mandelbrot.ini");
 
     EnableDebugLayer();
     CreateDevice();
