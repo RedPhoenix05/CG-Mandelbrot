@@ -121,12 +121,13 @@ enum class PrecisionMode
 
 struct MandelbrotConstants
 {
-    // For FP128 mode, center uses 4 doubles (hi/lo for x and y)
-    // For FP64/FP32 mode, only first 2 floats are used (as float2)
+    // Always reserve space for FP128 mode (4 doubles = 32 bytes)
+    // In FP32/FP64 mode, we use centerX/centerY and pad the rest
     union {
         struct {
             float centerX;
             float centerY;
+            float _padding_center[6]; // Pad to match 4 doubles
         };
         struct {
             double centerX_hi;
@@ -145,6 +146,7 @@ struct MandelbrotConstants
     float padding0;
     float padding0b;
     float padding0c;
+    float padding_before_colorA; // Align to 16-byte boundary for float3 in HLSL
     float colorA_R;
     float colorA_G;
     float colorA_B;
@@ -159,6 +161,8 @@ struct MandelbrotConstants
     float padding3;
 };
 
+static_assert(sizeof(MandelbrotConstants) == 128, "MandelbrotConstants size mismatch");
+
 MandelbrotConstants mandelbrotConstants = {
     -0.7436439f,
     0.1318259f,
@@ -172,6 +176,7 @@ MandelbrotConstants mandelbrotConstants = {
     0.0f,
     0.0f,
     0.0f,
+    0.0f, // padding_before_colorA
     0.08f, 0.02f, 0.20f, 0.0f,
     0.10f, 0.55f, 0.95f, 0.0f,
     0.95f, 0.90f, 0.25f, 0.0f
@@ -604,6 +609,7 @@ void UpdateConstantBuffer()
     mandelbrotConstants.resolutionY = static_cast<float>(clientHeight);
 
     // Update center based on precision mode
+    // Always write to the double fields (hi/lo) for consistent layout
     if (currentPrecisionMode == PrecisionMode::Float128)
     {
         mandelbrotConstants.centerX_hi = centerX_qp.hi;
@@ -613,10 +619,24 @@ void UpdateConstantBuffer()
     }
     else if (currentPrecisionMode == PrecisionMode::Float64)
     {
-        mandelbrotConstants.centerX = static_cast<float>(centerX_hp);
-        mandelbrotConstants.centerY = static_cast<float>(centerY_hp);
+        // Store as doubles in hi, zero out lo
+        mandelbrotConstants.centerX_hi = centerX_hp;
+        mandelbrotConstants.centerX_lo = 0.0;
+        mandelbrotConstants.centerY_hi = centerY_hp;
+        mandelbrotConstants.centerY_lo = 0.0;
     }
-    // else Float32 mode uses the values already in mandelbrotConstants
+    else // Float32
+    {
+        // Read from float union members before overwriting
+        float tempCenterX = mandelbrotConstants.centerX;
+        float tempCenterY = mandelbrotConstants.centerY;
+
+        // Store floats as doubles in hi, zero out lo
+        mandelbrotConstants.centerX_hi = static_cast<double>(tempCenterX);
+        mandelbrotConstants.centerX_lo = 0.0;
+        mandelbrotConstants.centerY_hi = static_cast<double>(tempCenterY);
+        mandelbrotConstants.centerY_lo = 0.0;
+    }
 
     std::memcpy(mappedConstantBuffer, &mandelbrotConstants, sizeof(mandelbrotConstants));
 }

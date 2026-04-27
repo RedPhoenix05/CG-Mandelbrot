@@ -166,15 +166,13 @@ float dd_mag_to_float(dd_real2 z)
 
 cbuffer MandelbrotParams : register(b0)
 {
-#if USE_FP128
-    // For quad precision, center is passed as dd_real2 (4 doubles)
+    // Always use the same layout (4 doubles = 32 bytes)
+    // In FP32/FP64 mode, only first 2 floats (centerX_hi as float2) are used
     double centerX_hi;
     double centerX_lo;
     double centerY_hi;
     double centerY_lo;
-#else
-    float2 center;
-#endif
+
     float scale;
     uint maxIterations;
 
@@ -185,6 +183,7 @@ cbuffer MandelbrotParams : register(b0)
     float _padding0;
     float _padding0b;
     float _padding0c;
+    float _padding_before_colorA; // Align colorA to 16-byte boundary
 
     float3 colorA;
     float _padding1;
@@ -343,10 +342,14 @@ float4 PSMain(VSOutput input) : SV_Target
     c.x = dd_add(center.x, offset_x);
     c.y = dd_add(center.y, offset_y);
 #else
+    // For FP32/FP64 modes, read center from the hi components (they store the full value)
     REAL aspect = (REAL)safeResolution.x / (REAL)safeResolution.y;
     REAL2 uv = REAL2((REAL)input.uv.x, (REAL)input.uv.y);
 
-    REAL2 c = (REAL2)center + REAL2((uv.x * (REAL)2.0 - (REAL)1.0) * (REAL)scale * aspect, (uv.y * (REAL)2.0 - (REAL)1.0) * (REAL)scale);
+    // centerX_hi and centerY_hi contain the center position (as doubles or reinterpreted as floats)
+    REAL2 centerPos = REAL2((REAL)centerX_hi, (REAL)centerY_hi);
+
+    REAL2 c = centerPos + REAL2((uv.x * (REAL)2.0 - (REAL)1.0) * (REAL)scale * aspect, (uv.y * (REAL)2.0 - (REAL)1.0) * (REAL)scale);
 #endif
 
     float distanceEstimate = 0.0;
